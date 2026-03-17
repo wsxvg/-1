@@ -8,22 +8,21 @@ on:
 jobs:
   douyin-sender:
     runs-on: ubuntu-latest
-    container: python:3.11-slim
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Chrome and dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          apt-get update && apt-get install -y wget gnupg
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
-          apt-get update && apt-get install -y google-chrome-stable xvfb
           pip install DrissionPage requests
 
       - name: Run Douyin sender
-        run: |
-          xvfb-run -a python 1.py
+        run: python 1.py
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           DOUYIN_PWD: ${{ secrets.DOUYIN_PWD }}
