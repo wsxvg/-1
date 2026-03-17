@@ -195,7 +195,7 @@ def check_login_status(page):
 
 def main():
     co = ChromiumOptions()
-    co.set_argument('--headless')  # 本地调试可以注释掉
+    co.set_argument('--headless')  # 本地调试注释掉，GitHub Actions 取消注释
     co.set_argument('--mute-audio')
     co.set_argument('--incognito')
     page = ChromiumPage(co)
