@@ -163,7 +163,8 @@ class WeiboQRBot:
     def check_status(self, qrid):
         url = f"https://passport.weibo.com/sso/v2/qrcode/check?entry=miniblog&qrid={qrid}&_={int(time.time()*1000)}"
         resp = self.session.get(url).json()
-        return resp.get('retcode'), resp.get('data', {}), resp
+        data = resp.get('data') or {}
+        return resp.get('retcode'), data, resp
 
     def run(self):
         print("🚀 开始微博登录流程...")
@@ -238,23 +239,33 @@ class WeiboQRBot:
             elif ret == 50114004:
                 # 已确认登录
                 print("✅ 用户已确认，正在换取 Cookie...")
-                alt = data.get('alt')
+                print(f"📊 返回数据: {data}")
+                alt = data.get('alt') if data else None
                 if alt:
                     login_url = f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3"
                     self.session.get(login_url)
+                else:
+                    print("⚠️ alt 为空，尝试直接访问登录页面...")
+                    self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3")
                 
                 cookies = self.session.cookies.get_dict()
                 sub_cookie = cookies.get('SUB')
+                print(f"🍪 获取到的 Cookie: {list(cookies.keys())}")
                 
-                print("=" * 50)
-                print("✨ 登录成功！")
-                print(f"SUB: {sub_cookie}")
-                print("=" * 50)
-                
-                # 发送成功通知
-                self.send_success_notification(sub_cookie)
-                
-                return sub_cookie
+                if sub_cookie:
+                    print("=" * 50)
+                    print("✨ 登录成功！")
+                    print(f"SUB: {sub_cookie}")
+                    print("=" * 50)
+                    
+                    # 发送成功通知
+                    self.send_success_notification(sub_cookie)
+                    
+                    return sub_cookie
+                else:
+                    print("⚠️ SUB Cookie 未获取到，继续等待...")
+                    time.sleep(3)
+                    continue
             
             else:
                 print(f"⚠️ 未知状态: ret={ret}, data={data}")
