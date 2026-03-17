@@ -26,7 +26,7 @@ jobs:
         id: login
         run: |
           echo "🚀 开始微博扫码登录流程..."
-          python weibo_login_test/weibo_qr_login.py
+          python weibo_qr_login.py
           echo "✅ 登录流程执行完成"
 
       - name: 检查新的 Cookie
