@@ -1,28 +1,53 @@
-name: Douyin Auto Sender
+name: 微博扫码登录
 
+# 手动触发
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 9 * * *'
 
 jobs:
-  douyin-sender:
+  login:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      actions: write
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install DrissionPage requests
+      - name: 安装依赖
+        run: pip install requests
 
-      - name: Run Douyin sender
-        run: python 1.py
+      - name: 运行扫码登录
+        id: login
+        run: |
+          echo "🚀 开始微博扫码登录流程..."
+          python weibo_login_test/weibo_qr_login.py
+          echo "✅ 登录流程执行完成"
+
+      - name: 检查新的 Cookie
+        id: check_cookie
+        if: ${{ always() }}
+        run: |
+          if [ -n "$NEW_SUB_COOKIE" ]; then
+            echo "✅ 检测到新的 SUB Cookie"
+            echo "NEW_SUB_COOKIE=$NEW_SUB_COOKIE" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ 无新的 Cookie"
+          fi
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          DOUYIN_PWD: ${{ secrets.DOUYIN_PWD }}
+          NEW_SUB_COOKIE: ${{ steps.login.outputs.NEW_SUB_COOKIE }}
+
+      - name: 更新仓库 Secrets
+        if: ${{ steps.check_cookie.outputs.NEW_SUB_COOKIE != '' }}
+        run: |
+          echo "🔐 正在更新 WEIBO_SUB_COOKIE Secrets..."
+          echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
+          echo "✅ WEIBO_SUB_COOKIE 已更新"
+        env:
+          NEW_SUB_COOKIE: ${{ steps.check_cookie.outputs.NEW_SUB_COOKIE }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
