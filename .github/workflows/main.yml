@@ -1,53 +1,29 @@
-name: 🚀 手动运行抖音私信任务
+name: Douyin Auto Sender
 
 on:
-  # 这个触发器就是“允许手动运行”的核心！
-  workflow_dispatch: 
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * *'
 
 jobs:
-  run-douyin-automation:
+  douyin-sender:
     runs-on: ubuntu-latest
+    container: python:3.11-slim
 
     steps:
-      # 1. 拉取你的代码
-      - name: 📥 拉取代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 2. 配置 Python 环境
-      - name: 🐍 设置 Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      # 3. 安装 Chrome 浏览器、虚拟显示器和中文字体（极其重要，防止截图乱码）
-      - name: 🌐 安装 Chrome 与系统依赖
+      - name: Install Chrome and dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable fonts-wqy-zenhei xvfb
-
-      # 4. 安装 Python 依赖库
-      - name: 📦 安装 Python 依赖
-        run: |
-          python -m pip install --upgrade pip
+          apt-get update && apt-get install -y wget gnupg
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
+          apt-get update && apt-get install -y google-chrome-stable xvfb
           pip install DrissionPage requests
 
-      # 5. 运行你的主程序代码
-      - name: ▶️ 执行自动化脚本
-        id: run_script
-        env:
-          # 从仓库的 Secrets 中读取环境变量注入到代码中
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          DOUYIN_PWD: ${{ secrets.DOUYIN_PWD }}
-          DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
-        # 使用 xvfb-run 开启虚拟屏幕运行，大幅提升无头浏览器的稳定性
-        run: xvfb-run python main.py
-
-      # 6. 自动更新 Cookie（如果代码输出了新 Cookie 的话）
-      - name: 💾 自动保存新 Cookie 到 Secrets
-        # 只有当 Python 代码输出了 NEW_DOUYIN_COOKIE 时才执行这一步
-        if: steps.run_script.outputs.NEW_DOUYIN_COOKIE != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }} # 这里必须用你申请的 Personal Access Token
+      - name: Run Douyin sender
         run: |
-          gh secret set DOUYIN_COOKIES -b "${{ steps.run_script.outputs.NEW_DOUYIN_COOKIE }}" --repo ${{ github.repository }}
-          echo "🎉 恭喜！最新 Cookie 已成功覆盖写入 GitHub Secrets！"
+          xvfb-run -a python 1.py
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          DOUYIN_PWD: ${{ secrets.DOUYIN_PWD }}
