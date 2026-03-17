@@ -163,7 +163,7 @@ class WeiboQRBot:
     def check_status(self, qrid):
         url = f"https://passport.weibo.com/sso/v2/qrcode/check?entry=miniblog&qrid={qrid}&_={int(time.time()*1000)}"
         resp = self.session.get(url).json()
-        return resp.get('retcode'), resp.get('data', {})
+        return resp.get('retcode'), resp.get('data', {}), resp
 
     def run(self):
         print("🚀 开始微博登录流程...")
@@ -194,7 +194,7 @@ class WeiboQRBot:
         print(f"⏳ 开始轮询，等待扫码... (超时 {timeout} 秒)")
         
         while time.time() - start < timeout:
-            ret, data = self.check_status(qrid)
+            ret, data, full_resp = self.check_status(qrid)
             
             if ret == 20000000:
                 elapsed = int(time.time() - start)
@@ -228,8 +228,36 @@ class WeiboQRBot:
                 
                 return sub_cookie
             
+            elif ret == 50114001:
+                # 二维码已扫描，等待确认
+                elapsed = int(time.time() - start)
+                print(f"✅ 已扫码 ({elapsed}s)，请在手机上确认登录...")
+                time.sleep(3)
+                continue
+            
+            elif ret == 50114004:
+                # 已确认登录
+                print("✅ 用户已确认，正在换取 Cookie...")
+                alt = data.get('alt')
+                if alt:
+                    login_url = f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3"
+                    self.session.get(login_url)
+                
+                cookies = self.session.cookies.get_dict()
+                sub_cookie = cookies.get('SUB')
+                
+                print("=" * 50)
+                print("✨ 登录成功！")
+                print(f"SUB: {sub_cookie}")
+                print("=" * 50)
+                
+                # 发送成功通知
+                self.send_success_notification(sub_cookie)
+                
+                return sub_cookie
+            
             else:
-                print(f"⚠️ 未知状态: ret={ret}")
+                print(f"⚠️ 未知状态: ret={ret}, data={data}")
                 time.sleep(3)
                 continue
         
