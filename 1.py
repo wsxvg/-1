@@ -195,9 +195,14 @@ def check_login_status(page):
 
 def main():
     co = ChromiumOptions()
-    co.set_argument('--headless')  # 本地调试注释掉，GitHub Actions 取消注释
     co.set_argument('--mute-audio')
     co.set_argument('--incognito')
+    
+    # GitHub Actions 环境检测
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        co.set_argument('--headless=new')
+        co.set_argument('--no-sandbox')
+    
     page = ChromiumPage(co)
     
     # 1. 尝试加载 cookie
