@@ -15,6 +15,15 @@ on:
     - cron: '0 12 * * *'  # 20点北京
     - cron: '0 13 * * *'  # 21点北京
   workflow_dispatch:
+    inputs:
+      mode:
+        description: '运行模式'
+        required: true
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - trigger
 
 jobs:
   monitor:
@@ -25,16 +34,31 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests python-dateutil pytz lark-oapi
-      - run: python weibo.py
+      - name: 运行监控脚本
+        id: monitor
+        run: |
+          if [[ "${{ github.event.inputs.mode }}" == "trigger" ]]; then
+            python weibo.py --trigger
+          else
+            python weibo.py
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+      - name: 保存新 Cookie
+        if: ${{ always() && steps.monitor.outputs.NEW_SUB_COOKIE != '' }}
+        run: |
+          echo "${{ steps.monitor.outputs.NEW_SUB_COOKIE }}" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 提交状态文件
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: Update status $(date '+%Y-%m-%d %H:%M')
           file_pattern: last_processed_id.txt
-      - if: ${{ always() }}
+      - name: 保存新 Cookie
+        if: ${{ always() && env.NEW_SUB_COOKIE != '' }}
         run: |
-          if [ -n "$NEW_SUB_COOKIE" ]; then
-            echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
-          fi
+          echo "${{ env.NEW_SUB_COOKIE }}" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
