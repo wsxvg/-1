@@ -174,7 +174,7 @@ class WeiboQRLogin:
         """
         扫码登录流程
         - trigger_only=False: 正常模式，检查24h冷却，发送二维码+轮询，超时发送按钮
-        - trigger_only=True: 手动触发模式，跳过冷却，直接发送二维码（不轮询）
+        - trigger_only=True: 手动触发模式，跳过冷却，发送二维码+轮询（超时不发送按钮）
         """
         logger.info(f"🚀 开始微博扫码登录流程 (trigger_only={trigger_only})")
         
@@ -200,12 +200,7 @@ class WeiboQRLogin:
             if not trigger_only:
                 self.save_qrcode_status(success=True)
         
-        # 手动触发模式：只发送二维码，不轮询
-        if trigger_only:
-            logger.info("📤 已发送二维码，请前往飞书扫码（下次运行将自动获取Cookie）")
-            return None
-        
-        # 正常模式：轮询等待扫描
+        # 轮询等待扫描（两种模式都轮询）
         start_time = time.time()
         while time.time() - start_time < timeout:
             ret, data, _ = self.check_status(qrid)
@@ -250,9 +245,12 @@ class WeiboQRLogin:
             
             time.sleep(3)
         
-        # 超时：发送按钮让用户手动触发
-        logger.warning("⏰ 扫码超时，发送触发按钮...")
-        self.send_timeout_button()
+        # 超时：正常模式发送按钮，手动触发模式不发送
+        if not trigger_only:
+            logger.warning("⏰ 扫码超时，发送触发按钮...")
+            self.send_timeout_button()
+        else:
+            logger.warning("⏰ 扫码超时，请重新手动触发")
         return None
     
     def send_timeout_button(self):
@@ -1230,14 +1228,26 @@ if __name__ == '__main__':
             print("❌ 登录失败或超时")
         sys.exit(0)
     
-    # 手动触发模式（跳过冷却，不轮询）
+    # 手动触发模式（跳过冷却，带轮询）
     if '--trigger' in sys.argv:
         sys.argv.remove('--trigger')
-        logger.info("🚀 手动触发获取二维码（跳过冷却，不轮询）...")
+        logger.info("🚀 手动触发获取二维码（跳过冷却，带轮询）...")
         login_bot = WeiboQRLogin(feishu_app_id, feishu_app_secret, feishu_chat_id)
-        login_bot.run_login_process(trigger_only=True)
-        print("\n✅ 二维码已发送，请前往飞书扫码")
-        print("💡 扫描成功后，下次运行将自动获取新Cookie")
+        new_cookie = login_bot.run_login_process(trigger_only=True)
+        
+        if new_cookie:
+            # 扫码成功，保存到 TXT
+            current_status = load_status()
+            save_status(current_status.get('last_timestamp'), new_cookie)
+            logger.info("✅ 新 Cookie 已保存到 TXT")
+            print(f"\n✅ 登录成功！Cookie: {new_cookie[:20]}...")
+            
+            # 立即重新运行监控
+            logger.info("🔄 立即重新运行监控...")
+            execute_monitoring(new_cookie, feishu_app_id, feishu_app_secret, feishu_chat_id)
+            sys.exit(0)
+        else:
+            print("\n❌ 登录失败或超时")
         sys.exit(0)
     
     # 正常监控模式
