@@ -30,6 +30,11 @@ class WeiboQRLogin:
     
     def __init__(self, feishu_app_id: str = None, feishu_app_secret: str = None, feishu_chat_id: str = None):
         self.session = requests.Session()
+        # 使用完整的 headers（和 weibo_qr_login.py 一致）
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+            "Referer": "https://passport.weibo.com/"
+        })
         self.qrcode_url = "https://passport.weibo.com/sso/v2/qrcode/image"
         self.check_url = "https://passport.weibo.com/sso/v2/qrcode/check"
         self.login_url = "https://passport.weibo.com/sso/v2/login"
@@ -202,6 +207,8 @@ class WeiboQRLogin:
         
         # 轮询等待扫描（两种模式都轮询）
         start_time = time.time()
+        saved_alt = None  # 保存 alt 供 50114004 使用
+        
         while time.time() - start_time < timeout:
             ret, data, full_resp = self.check_status(qrid)
             
@@ -209,17 +216,24 @@ class WeiboQRLogin:
             if ret == 50114004:
                 logger.info("✅ 用户已确认登录，正在获取 Cookie...")
                 from urllib.parse import urlparse, parse_qs
-                # 尝试从 data.url 或 data.alt 获取
-                url = data.get('url', '') if isinstance(data, dict) else ''
-                query = parse_qs(urlparse(url).query)
-                alt = query.get('alt', [None])[0] or (data.get('alt') if isinstance(data, dict) else None)
+                
+                # 优先用保存的 alt，其次从 data 获取
+                alt = saved_alt
+                if not alt:
+                    url = data.get('url', '') if isinstance(data, dict) else ''
+                    query = parse_qs(urlparse(url).query)
+                    alt = query.get('alt', [None])[0] or (data.get('alt') if isinstance(data, dict) else None)
                 
                 if alt:
-                    logger.info(f"🎫 获取到 alt: {alt[:30]}...")
-                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    logger.info(f"🎫 使用 alt: {alt[:30]}...")
+                    # 跟随重定向获取 cookie
+                    self.session.get(
+                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
+                        allow_redirects=True
+                    )
                 else:
                     logger.warning("⚠️ alt 为空，尝试直接访问登录页面...")
-                    self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3")
+                    self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3", allow_redirects=True)
                 
                 cookies = self.session.cookies.get_dict()
                 sub_cookie = cookies.get('SUB')
@@ -243,6 +257,14 @@ class WeiboQRLogin:
             # 50114001 = 已扫码，等待确认
             if ret == 50114001:
                 logger.info("✅ 已扫码，请点击确认登录...")
+                # 尝试获取并保存 alt
+                from urllib.parse import urlparse, parse_qs
+                url = data.get('url', '') if isinstance(data, dict) else ''
+                query = parse_qs(urlparse(url).query)
+                alt = query.get('alt', [None])[0]
+                if alt:
+                    saved_alt = alt
+                    logger.info(f"🎫 保存 alt: {alt[:30]}...")
                 time.sleep(3)
                 continue
             
@@ -256,7 +278,11 @@ class WeiboQRLogin:
                 
                 if alt:
                     logger.info(f"🎫 获取到 alt: {alt[:30]}...")
-                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    saved_alt = alt  # 保存 alt
+                    self.session.get(
+                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
+                        allow_redirects=True
+                    )
                     cookies = self.session.cookies.get_dict()
                     sub_cookie = cookies.get('SUB')
                     if sub_cookie:
@@ -277,7 +303,11 @@ class WeiboQRLogin:
                 logger.info("✅ 确认成功，获取 Cookie...")
                 alt = data.get('alt') if isinstance(data, dict) else None
                 if alt:
-                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    saved_alt = alt
+                    self.session.get(
+                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
+                        allow_redirects=True
+                    )
                     sub_cookie = self.session.cookies.get('SUB')
                     if sub_cookie:
                         logger.info("✅ 扫码成功，获取到新Cookie")
