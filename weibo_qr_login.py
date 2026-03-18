@@ -162,9 +162,11 @@ class WeiboQRBot:
 
     def check_status(self, qrid):
         url = f"https://passport.weibo.com/sso/v2/qrcode/check?entry=miniblog&qrid={qrid}&_={int(time.time()*1000)}"
-        resp = self.session.get(url).json()
-        data = resp.get('data') or {}
-        return resp.get('retcode'), data, resp
+        resp = self.session.get(url)
+        resp_json = resp.json()
+        print(f"🔍 check_status 原始响应: {resp_json}")
+        data = resp_json.get('data') or {}
+        return resp_json.get('retcode'), data, resp_json
 
     def run(self):
         print("🚀 开始微博登录流程...")
@@ -196,6 +198,10 @@ class WeiboQRBot:
         
         while time.time() - start < timeout:
             ret, data, full_resp = self.check_status(qrid)
+            
+            # 调试打印
+            if ret == 50114004:
+                print(f"🔍 50114004 完整响应: {full_resp}")
             
             if ret == 20000000:
                 elapsed = int(time.time() - start)
@@ -240,6 +246,7 @@ class WeiboQRBot:
                 # 已确认登录
                 print("✅ 用户已确认，正在换取 Cookie...")
                 print(f"📊 返回数据: {data}")
+                print(f"📊 完整响应: {full_resp}")
                 alt = data.get('alt') if data else None
                 if alt:
                     login_url = f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3"
