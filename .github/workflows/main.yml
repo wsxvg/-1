@@ -38,12 +38,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPO: ${{ github.repository }}
-      - name: 保存新 Cookie
-        if: ${{ always() && steps.monitor.outputs.NEW_SUB_COOKIE != '' }}
-        run: |
-          echo "${{ steps.monitor.outputs.NEW_SUB_COOKIE }}" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: 提交状态文件
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
