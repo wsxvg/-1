@@ -1,53 +1,36 @@
-name: 微博扫码登录
+name: 微博监控
 
-# 手动触发
 on:
+  schedule:
+    # 北京时间 7,8,9,10,12,15,16,17,18,19,20,21 点（UTC 时间减 8 小时）
+    - cron: '0 23 * * *'  # 7点北京
+    - cron: '0 0 * * *'   # 8点北京
+    - cron: '0 1 * * *'   # 9点北京
+    - cron: '0 2 * * *'   # 10点北京
+    - cron: '0 4 * * *'   # 12点北京
+    - cron: '0 7 * * *'   # 15点北京
+    - cron: '0 8 * * *'   # 16点北京
+    - cron: '0 9 * * *'   # 17点北京
+    - cron: '0 10 * * *'  # 18点北京
+    - cron: '0 11 * * *'  # 19点北京
+    - cron: '0 12 * * *'  # 20点北京
+    - cron: '0 13 * * *'  # 21点北京
   workflow_dispatch:
 
 jobs:
-  login:
+  monitor:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: 安装依赖
-        run: pip install requests
-
-      - name: 运行扫码登录
-        id: login
-        run: |
-          echo "🚀 开始微博扫码登录流程..."
-          python weibo_qr_login.py
-          echo "✅ 登录流程执行完成"
-
-      - name: 检查新的 Cookie
-        id: check_cookie
-        if: ${{ always() }}
+      - run: pip install requests python-dateutil pytz lark-oapi
+      - run: python weibo.py
+      - if: ${{ always() }}
         run: |
           if [ -n "$NEW_SUB_COOKIE" ]; then
-            echo "✅ 检测到新的 SUB Cookie"
-            echo "NEW_SUB_COOKIE=$NEW_SUB_COOKIE" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ 无新的 Cookie"
+            echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "wsxvg/-1"
           fi
         env:
-          NEW_SUB_COOKIE: ${{ steps.login.outputs.NEW_SUB_COOKIE }}
-
-      - name: 更新仓库 Secrets
-        if: ${{ steps.check_cookie.outputs.NEW_SUB_COOKIE != '' }}
-        run: |
-          echo "🔐 正在更新 WEIBO_SUB_COOKIE Secrets..."
-          echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
-          echo "✅ WEIBO_SUB_COOKIE 已更新"
-        env:
-          NEW_SUB_COOKIE: ${{ steps.check_cookie.outputs.NEW_SUB_COOKIE }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: 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
