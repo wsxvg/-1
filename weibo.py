@@ -24,12 +24,182 @@ try:
 except ImportError:
     Image = None
 
+# ========== 微博扫码登录模块 ==========
+class WeiboQRLogin:
+    """微博扫码登录类 - 集成到主程序"""
+    
+    def __init__(self, feishu_app_id: str = None, feishu_app_secret: str = None, feishu_chat_id: str = None):
+        self.session = requests.Session()
+        self.qrcode_url = "https://passport.weibo.com/sso/v2/qrcode/image"
+        self.check_url = "https://passport.weibo.com/sso/v2/qrcode/check"
+        self.login_url = "https://passport.weibo.com/sso/v2/login"
+        self.feishu_app_id = feishu_app_id
+        self.feishu_app_secret = feishu_app_secret
+        self.feishu_chat_id = feishu_chat_id
+        self._feishu_token = None
+        self._token_expire_time = 0
+        self.status_file = "qrcode_status.json"
+        self.qr_cool_down = 3600
+    
+    def get_feishu_token(self) -> Optional[str]:
+        if not self.feishu_app_id or not self.feishu_app_secret:
+            return None
+        if self._feishu_token and time.time() < self._token_expire_time - 300:
+            return self._feishu_token
+        try:
+            url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+            data = {"app_id": self.feishu_app_id, "app_secret": self.feishu_app_secret}
+            r = requests.post(url, json=data, timeout=10)
+            result = r.json()
+            if result.get('code') == 0:
+                self._feishu_token = result.get('tenant_access_token')
+                self._token_expire_time = time.time() + result.get('expire', 7200)
+                return self._feishu_token
+            return None
+        except:
+            return None
+    
+    def check_qrcode_status(self) -> bool:
+        try:
+            if not os.path.exists(self.status_file):
+                return False
+            with open(self.status_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            last_send_time = data.get('send_time', 0)
+            if time.time() - last_send_time < self.qr_cool_down:
+                return True
+            return False
+        except:
+            return False
+    
+    def save_qrcode_status(self, success: bool = True):
+        try:
+            with open(self.status_file, 'w', encoding='utf-8') as f:
+                json.dump({'send_time': time.time(), 'success': success}, f)
+        except:
+            pass
+    
+    def upload_qrcode_to_feishu(self, qrcode_url: str) -> Optional[str]:
+        token = self.get_feishu_token()
+        if not token:
+            return None
+        try:
+            resp = requests.get(qrcode_url, timeout=15)
+            if resp.status_code != 200:
+                return None
+            url = "https://open.feishu.cn/open-apis/im/v1/images"
+            files = {'image_type': (None, 'message'), 'image': ('qrcode.jpg', resp.content, 'image/jpeg')}
+            r = requests.post(url, files=files, headers={'Authorization': f'Bearer {token}'}, timeout=30)
+            result = r.json()
+            if result.get('code') == 0:
+                return result.get('data', {}).get('image_key')
+            return None
+        except:
+            return None
+    
+    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, auto_trigger: bool = False) -> bool:
+        if not self.feishu_app_id or not self.feishu_app_secret or not self.feishu_chat_id:
+            return False
+        token = self.get_feishu_token()
+        if not token:
+            return False
+        
+        elements = []
+        if image_key:
+            elements.append({"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "登录二维码"}})
+        else:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"📷 [点击查看二维码]({qrcode_url})"}})
+        
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⏰ Cookie 已过期，请扫码更新"}})
+        
+        if GITHUB_TOKEN:
+            github_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/main.yml"
+            elements.append({
+                "tag": "action",
+                "actions": [{"tag": "button", "text": {"tag": "plain_text", "content": "🚀 立即触发扫码登录"}, "url": github_url, "type": "primary"}]
+            })
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "💡 点击按钮后会自动跳转到 GitHub Actions 页面"}})
+        
+        card = {"header": {"title": {"tag": "plain_text", "content": "🔐 Cookie 已过期"}, "template": "orange"}, "elements": elements}
+        
+        try:
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
+            r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
+            return r.json().get('code') == 0
+        except:
+            return False
+    
+    def get_qrcode(self) -> tuple:
+        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://passport.weibo.com/'}
+        try:
+            r = self.session.get(self.qrcode_url, params={'entry': 'miniblog', 'size': '180'}, headers=headers, timeout=15)
+            data = r.json()
+            if data.get('retcode') == 20000000:
+                qrid = data.get('data', {}).get('qrid')
+                image_url = data.get('data', {}).get('image')
+                return qrid, image_url
+            return None, None
+        except:
+            return None, None
+    
+    def check_status(self, qrid: str) -> tuple:
+        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://passport.weibo.com/'}
+        url = f"{self.check_url}?entry=miniblog&qrid={qrid}&_={int(time.time()*1000)}"
+        resp = self.session.get(url, headers=headers, timeout=15)
+        resp_json = resp.json()
+        return resp_json.get('retcode'), resp_json.get('data') or {}, resp_json
+    
+    def run_login_process(self, timeout: int = 120, trigger_only: bool = False) -> Optional[str]:
+        logger.info("🚀 开始微博扫码登录流程")
+        
+        if trigger_only:
+            self.send_feishu_notification("", None, auto_trigger=True)
+            return None
+        
+        if self.check_qrcode_status():
+            logger.warning("⚠️ 1小时内已发送过二维码，跳过")
+            return None
+        
+        qrid, image_url = self.get_qrcode()
+        if not qrid:
+            return None
+        
+        image_key = self.upload_qrcode_to_feishu(image_url)
+        if self.send_feishu_notification(image_url, image_key):
+            self.save_qrcode_status(success=True)
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            ret, data, _ = self.check_status(qrid)
+            if ret == 20000000:
+                time.sleep(3)
+                continue
+            elif ret == 20100000:
+                time.sleep(3)
+                continue
+            elif ret == 20000000:
+                from urllib.parse import urlparse, parse_qs
+                url = data.get('url', '')
+                query = parse_qs(urlparse(url).query)
+                alt = query.get('alt', [None])[0]
+                if alt:
+                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    sub_cookie = self.session.cookies.get('SUB')
+                    if sub_cookie:
+                        self.save_qrcode_status(success=False)
+                        return sub_cookie
+            elif ret == 50114004:
+                return None
+            time.sleep(3)
+        return None
+
 # ---------- 配置 ----------
 GROUP_ID = '5159683220312291'
 MAX_WORKERS = 10
 PAGE_LIMIT = 20
 # 微博Cookie (从浏览器F12 Headers中提取)
-DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1NfwLa8WGEMJdHVbVkEaB4udpifyizasVS"
+DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1NfwLa8WGEMJdHVbVkEaB4udpifyizasVP"
 # 飞书应用配置（用于发送图片消息）
 DEFAULT_FEISHU_APP_ID = "cli_a933badfd57bdbde"
 DEFAULT_FEISHU_APP_SECRET = "zliAQFZ61YOVdhSz8vecahozbGz6Ym5j"
@@ -999,351 +1169,4 @@ if __name__ == '__main__':
                 sys.exit(1)
         else:
             sys.exit(1)
-
-
-# ========== 微博扫码登录模块 ==========
-class WeiboQRLogin:
-    """微博扫码登录类 - 集成到主程序"""
-    
-    def __init__(self, feishu_app_id: str = None, feishu_app_secret: str = None, feishu_chat_id: str = None):
-        self.session = requests.Session()
-        self.qrcode_url = "https://passport.weibo.com/sso/v2/qrcode/image"
-        self.check_url = "https://passport.weibo.com/sso/v2/qrcode/check"
-        self.login_url = "https://passport.weibo.com/sso/v2/login"
-        # 飞书应用配置
-        self.feishu_app_id = feishu_app_id
-        self.feishu_app_secret = feishu_app_secret
-        self.feishu_chat_id = feishu_chat_id
-        self._feishu_token = None
-        self._token_expire_time = 0
-        # 防刷屏配置
-        self.status_file = "qrcode_status.json"
-        self.qr_cool_down = 3600  # 1小时内不重复发送二维码
-    
-    def get_feishu_token(self) -> Optional[str]:
-        """获取飞书 access_token"""
-        if not self.feishu_app_id or not self.feishu_app_secret:
-            return None
-        
-        if self._feishu_token and time.time() < self._token_expire_time - 300:
-            return self._feishu_token
-        
-        try:
-            url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-            data = {"app_id": self.feishu_app_id, "app_secret": self.feishu_app_secret}
-            r = requests.post(url, json=data, timeout=10)
-            result = r.json()
-            
-            if result.get('code') == 0:
-                self._feishu_token = result.get('tenant_access_token')
-                self._token_expire_time = time.time() + result.get('expire', 7200)
-                logger.info("🔑 飞书 Token 获取成功")
-                return self._feishu_token
-            return None
-        except Exception as e:
-            logger.error(f"飞书 Token 请求异常: {e}")
-            return None
-    
-    def check_qrcode_status(self) -> bool:
-        """
-        检查是否在冷却期内（1小时内已发送过二维码）
-        
-        Returns:
-            bool: True 表示在冷却期内，不应发送新二维码；False 表示可以发送
-        """
-        try:
-            if not os.path.exists(self.status_file):
-                return False
-            
-            with open(self.status_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            last_send_time = data.get('send_time', 0)
-            current_time = time.time()
-            
-            if current_time - last_send_time < self.qr_cool_down:
-                remaining = int((self.qr_cool_down - (current_time - last_send_time)) / 60)
-                logger.info(f"⏳ 二维码在冷却期内，{remaining}分钟后可重新发送")
-                return True
-            
-            return False
-        except Exception:
-            return False
-    
-    def save_qrcode_status(self, success: bool = True):
-        """保存二维码发送状态"""
-        try:
-            data = {
-                'send_time': time.time(),
-                'success': success
-            }
-            with open(self.status_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False)
-            logger.info(f"✅ 二维码状态已保存: success={success}")
-        except Exception as e:
-            logger.error(f"保存二维码状态失败: {e}")
-    
-    def upload_qrcode_to_feishu(self, qrcode_url: str) -> Optional[str]:
-        """上传二维码图片到飞书"""
-        token = self.get_feishu_token()
-        if not token:
-            return None
-        
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                'Referer': 'https://weibo.com/',
-            }
-            resp = requests.get(qrcode_url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                return None
-            
-            upload_url = "https://open.feishu.cn/open-apis/im/v1/images"
-            files = {'image_type': (None, 'message'), 'image': ('qrcode.jpg', resp.content, 'image/jpeg')}
-            r = requests.post(upload_url, files=files, headers={'Authorization': f'Bearer {token}'}, timeout=30)
-            result = r.json()
-            
-            if result.get('code') == 0:
-                return result.get('data', {}).get('image_key')
-            return None
-        except Exception:
-            return None
-    
-    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, auto_trigger: bool = False) -> bool:
-        """
-        发送飞书二维码通知
-        
-        Args:
-            qrcode_url: 二维码图片URL
-            image_key: 飞书图片key
-            auto_trigger: 是否自动触发 GitHub Actions（用户点击按钮触发）
-        """
-        if not self.feishu_app_id or not self.feishu_app_secret or not self.feishu_chat_id:
-            logger.warning("飞书配置不完整，跳过通知")
-            return False
-        
-        token = self.get_feishu_token()
-        if not token:
-            return False
-        
-        # 构建卡片元素
-        elements = []
-        
-        # 二维码图片
-        if image_key:
-            elements.append({
-                "tag": "img",
-                "img_key": image_key,
-                "alt": {"tag": "plain_text", "content": "登录二维码"}
-            })
-        else:
-            elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📷 [点击查看二维码]({qrcode_url})"
-                }
-            })
-        
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": "⏰ Cookie 已过期，请扫码更新"
-            }
-        })
-        
-        # 如果配置了 GitHub Token，添加触发按钮
-        if GITHUB_TOKEN:
-            # GitHub Actions 手动触发页面 URL
-            github_actions_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/main.yml"
-            
-            elements.append({
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "url",
-                        "text": {"tag": "plain_text", "content": "🚀 立即触发扫码登录"},
-                        "url": github_actions_url,
-                        "type": "default"
-                    }
-                ]
-            })
-            
-            elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "💡 点击上方按钮 → 点击【Run workflow】→ 等待二维码发送到飞书"
-                }
-            })
-        else:
-            elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "⚠️ 请手动运行 GitHub Actions 触发扫码登录"
-                }
-            })
-        
-        card_msg = {
-            "msg_type": "interactive",
-            "card": {
-                "header": {
-                    "title": {"tag": "plain_text", "content": "🔐 Cookie 已过期"},
-                    "template": "orange"
-                },
-                "elements": elements
-            }
-        }
-        
-        try:
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
-            payload = {
-                "receive_id": self.feishu_chat_id,
-                "msg_type": "interactive",
-                "content": json.dumps(card_msg["card"])
-            }
-            r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
-            if r.json().get('code') == 0:
-                logger.info("✅ 飞书过期通知已发送")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"飞书通知异常: {e}")
-            return False
-    
-    def get_qrcode(self) -> tuple:
-        """获取二维码"""
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://passport.weibo.com/'
-        }
-        params = {'entry': 'miniblog', 'size': '180'}
-        
-        try:
-            r = self.session.get(self.qrcode_url, params=params, headers=headers, timeout=15)
-            data = r.json()
-            
-            if data.get('retcode') == 20000000:
-                qrid = data.get('data', {}).get('qrid')
-                image_url = data.get('data', {}).get('image')
-                if qrid and image_url:
-                    logger.info(f"✅ 二维码获取成功: qrid={qrid}")
-                    return qrid, image_url
-            return None, None
-        except Exception as e:
-            logger.error(f"获取二维码异常: {e}")
-            return None, None
-    
-    def check_status(self, qrid: str) -> tuple:
-        """检查扫码状态"""
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://passport.weibo.com/'
-        }
-        url = f"{self.check_url}?entry=miniblog&qrid={qrid}&_={int(time.time()*1000)}"
-        resp = self.session.get(url, headers=headers, timeout=15)
-        resp_json = resp.json()
-        data = resp_json.get('data') or {}
-        return resp_json.get('retcode'), data, resp_json
-    
-    def run_login_process(self, timeout: int = 120, trigger_only: bool = False) -> Optional[str]:
-        """
-        扫码登录流程
-        
-        Args:
-            timeout: 轮询超时时间（秒）
-            trigger_only: True=只发送触发通知（带GitHub Actions按钮），False=完整扫码流程
-        
-        Returns:
-            str: SUB Cookie 值，trigger_only模式返回 None
-        """
-        logger.info("🚀 开始微博扫码登录流程")
-        
-        # 触发模式：只发送带按钮的通知，不生成二维码
-        if trigger_only:
-            logger.info("📤 发送触发通知（用户点击按钮后GitHub Actions将发送二维码）")
-            self.send_feishu_notification("", None, auto_trigger=True)
-            return None
-        
-        # 完整扫码模式
-        # 0. 检查是否在冷却期内
-        if self.check_qrcode_status():
-            logger.warning("⚠️ 1小时内已发送过二维码，跳过本次发送")
-            return None
-        
-        # 1. 获取二维码
-        qrid, image_url = self.get_qrcode()
-        if not qrid:
-            logger.error("❌ 获取二维码失败")
-            return None
-        
-        # 2. 上传二维码到飞书并发送通知
-        image_key = self.upload_qrcode_to_feishu(image_url)
-        if self.send_feishu_notification(image_url, image_key):
-            self.save_qrcode_status(success=True)
-        
-        # 3. 轮询等待扫码
-        start_time = time.time()
-        retry_count = 0
-        max_retry = 2
-        
-        logger.info(f"⏳ 开始轮询，等待扫码... (超时 {timeout} 秒)")
-        
-        while time.time() - start_time < timeout:
-            ret, data, full_resp = self.check_status(qrid)
-            
-            if ret == 20000000:
-                elapsed = int(time.time() - start_time)
-                logger.info(f"⏳ 等待扫码... ({elapsed}s)")
-                time.sleep(3)
-                continue
-            
-            elif ret == 20100000:
-                logger.info("✅ 已扫码，请点击确认登录...")
-                time.sleep(3)
-                continue
-            
-            elif ret == 20000000:
-                # 扫码成功，获取 alt
-                logger.info(f"✅ 扫码成功，正在换取 Cookie...")
-                url = data.get('url', '')
-                from urllib.parse import urlparse, parse_qs
-                parsed = urlparse(url)
-                query = parse_qs(parsed.query)
-                alt = query.get('alt', [None])[0]
-                
-                if alt:
-                    login_url = f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3"
-                    self.session.get(login_url)
-                    
-                    sub_cookie = self.session.cookies.get('SUB')
-                    if sub_cookie:
-                        logger.info(f"✅ SUB Cookie 获取成功: {sub_cookie[:20]}...")
-                        # 登录成功后重置状态
-                        self.save_qrcode_status(success=False)
-                        return sub_cookie
-            
-            elif ret == 50114004:
-                # 二维码已使用/过期，重新获取
-                retry_count += 1
-                if retry_count < max_retry:
-                    logger.info(f"⚠️ 二维码已过期，重新获取... ({retry_count}/{max_retry})")
-                    qrid, image_url = self.get_qrcode()
-                    if qrid:
-                        image_key = self.upload_qrcode_to_feishu(image_url)
-                        self.send_feishu_notification(image_url, image_key)
-                        continue
-                logger.error("❌ 二维码重试次数用完")
-                return None
-            
-            else:
-                logger.debug(f"状态: ret={ret}, data={data}")
-                time.sleep(3)
-                continue
-        
-        logger.error("❌ 轮询超时")
-        return None
 
