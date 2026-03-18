@@ -32,13 +32,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_processed_id.txt
           git commit -m "Update status $(date '+%Y-%m-%d %H:%M')" || echo "无需提交"
-          git push || echo "无需推送"
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} HEAD:main || echo "无需推送"
       - if: ${{ always() }}
         run: |
           if [ -n "$NEW_SUB_COOKIE" ]; then
-            echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "wsxvg/-1"
+            echo "$NEW_SUB_COOKIE" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
           fi
         env:
-          GH_TOKEN: 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
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
