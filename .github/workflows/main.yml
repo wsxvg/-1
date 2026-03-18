@@ -15,15 +15,6 @@ on:
     - cron: '0 12 * * *'  # 20点北京
     - cron: '0 13 * * *'  # 21点北京
   workflow_dispatch:
-    inputs:
-      mode:
-        description: '运行模式'
-        required: true
-        default: 'normal'
-        type: choice
-        options:
-          - normal
-          - trigger
 
 jobs:
   monitor:
@@ -37,9 +28,11 @@ jobs:
       - name: 运行监控脚本
         id: monitor
         run: |
-          if [[ "${{ github.event.inputs.mode }}" == "trigger" ]]; then
+          # 手动触发(workflow_dispatch)跳过冷却，直接发二维码
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             python weibo.py --trigger
           else
+            # 定时任务：正常模式（带冷却、带轮询）
             python weibo.py
           fi
         env:
@@ -56,9 +49,3 @@ jobs:
         with:
           commit_message: Update status $(date '+%Y-%m-%d %H:%M')
           file_pattern: last_processed_id.txt
-      - name: 保存新 Cookie
-        if: ${{ always() && env.NEW_SUB_COOKIE != '' }}
-        run: |
-          echo "${{ env.NEW_SUB_COOKIE }}" | gh secret set WEIBO_SUB_COOKIE -b - --repo "${{ github.repository }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
