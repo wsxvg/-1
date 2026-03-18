@@ -205,26 +205,40 @@ class WeiboQRLogin:
         while time.time() - start_time < timeout:
             ret, data, _ = self.check_status(qrid)
             
-            # 50114004 = 已扫描待确认
+            # 50114004 = 已确认登录
             if ret == 50114004:
-                logger.info("✅ 用户已扫码，等待确认...")
-                time.sleep(3)
-                continue
-            
-            # 20000000 = 待扫描
-            if ret == 20000000:
-                time.sleep(3)
-                continue
-            
-            # 20100000 = 扫描中
-            if ret == 20100000:
-                time.sleep(3)
-                continue
-            
-            # 获取到cookie
-            if ret == 0 and data:
+                logger.info("✅ 用户已确认登录，正在获取 Cookie...")
                 from urllib.parse import urlparse, parse_qs
-                url = data.get('url', '')
+                url = data.get('url', '') or ''
+                query = parse_qs(urlparse(url).query)
+                alt = query.get('alt', [None])[0] or data.get('alt')
+                if alt:
+                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    sub_cookie = self.session.cookies.get('SUB')
+                    if sub_cookie:
+                        logger.info("✅ 扫码成功，获取到新Cookie")
+                        self.save_qrcode_status(success=False)
+                        github_output = os.environ.get('GITHUB_OUTPUT', '')
+                        if github_output:
+                            with open(github_output, 'a') as f:
+                                f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                        else:
+                            print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
+                        return sub_cookie
+                time.sleep(3)
+                continue
+            
+            # 50114001 = 已扫码，等待确认
+            if ret == 50114001:
+                logger.info("✅ 已扫码，请点击确认登录...")
+                time.sleep(3)
+                continue
+            
+            # 20000000 = 扫码成功，获取 alt
+            if ret == 20000000:
+                logger.info("✅ 用户已扫码，等待确认...")
+                from urllib.parse import urlparse, parse_qs
+                url = data.get('url', '') or ''
                 query = parse_qs(urlparse(url).query)
                 alt = query.get('alt', [None])[0]
                 if alt:
@@ -232,16 +246,36 @@ class WeiboQRLogin:
                     sub_cookie = self.session.cookies.get('SUB')
                     if sub_cookie:
                         logger.info("✅ 扫码成功，获取到新Cookie")
-                        self.save_qrcode_status(success=False)  # 清除冷却标记
-                        # 输出 NEW_SUB_COOKIE 供 GitHub Actions 捕获
+                        self.save_qrcode_status(success=False)
                         github_output = os.environ.get('GITHUB_OUTPUT', '')
                         if github_output:
                             with open(github_output, 'a') as f:
                                 f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
                         else:
-                            # 旧版 GitHub Actions
                             print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
                         return sub_cookie
+                time.sleep(3)
+                continue
+            
+            # 20100000 = 确认成功
+            if ret == 20100000:
+                logger.info("✅ 确认成功，获取 Cookie...")
+                alt = data.get('alt')
+                if alt:
+                    self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
+                    sub_cookie = self.session.cookies.get('SUB')
+                    if sub_cookie:
+                        logger.info("✅ 扫码成功，获取到新Cookie")
+                        self.save_qrcode_status(success=False)
+                        github_output = os.environ.get('GITHUB_OUTPUT', '')
+                        if github_output:
+                            with open(github_output, 'a') as f:
+                                f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                        else:
+                            print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
+                        return sub_cookie
+                time.sleep(3)
+                continue
             
             time.sleep(3)
         
