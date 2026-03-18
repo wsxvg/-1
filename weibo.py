@@ -1219,9 +1219,8 @@ def execute_monitoring(sub_cookie: str, feishu_app_id: str = None,
                     pass
         
         if latest_timestamp:
-            # 读取当前状态，保留 cookie
-            current_status = load_status()
-            save_status(int(latest_timestamp), current_status.get('cookie'))
+            # 保存时间戳和当前 cookie
+            save_status(int(latest_timestamp), sub_cookie)
             logger.info(f"📌 已更新抓取时间戳: {datetime.fromtimestamp(latest_timestamp).strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == '__main__':
