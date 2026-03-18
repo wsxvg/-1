@@ -82,22 +82,43 @@ class WeiboQRLogin:
     def upload_qrcode_to_feishu(self, qrcode_url: str) -> Optional[str]:
         token = self.get_feishu_token()
         if not token:
+            logger.error("❌ 无法获取飞书token")
             return None
         try:
             resp = requests.get(qrcode_url, timeout=15)
             if resp.status_code != 200:
+                logger.error(f"❌ 二维码下载失败: HTTP {resp.status_code}")
                 return None
+            logger.info(f"📷 二维码下载成功: {len(resp.content)} bytes")
+            
             url = "https://open.feishu.cn/open-apis/im/v1/images"
-            files = {'image_type': (None, 'message'), 'image': ('qrcode.jpg', resp.content, 'image/jpeg')}
-            r = requests.post(url, files=files, headers={'Authorization': f'Bearer {token}'}, timeout=30)
+            files = {
+                'image_type': (None, 'message'),
+                'image': ('qrcode.jpg', resp.content, 'image/jpeg')
+            }
+            headers = {'Authorization': f'Bearer {token}'}
+            
+            r = requests.post(url, files=files, headers=headers, timeout=30)
             result = r.json()
+            logger.info(f"📤 飞书上传响应: {result}")
+            
             if result.get('code') == 0:
-                return result.get('data', {}).get('image_key')
-            return None
-        except:
+                image_key = result.get('data', {}).get('image_key')
+                logger.info(f"✅ 飞书图片上传成功: {image_key}")
+                return image_key
+            else:
+                logger.error(f"❌ 飞书图片上传失败: {result}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ 飞书图片上传异常: {e}")
             return None
     
-    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, auto_trigger: bool = False) -> bool:
+    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, trigger_only: bool = False) -> bool:
+        """
+        发送飞书二维码通知
+        - trigger_only=False: 正常模式，显示轮询提示
+        - trigger_only=True: 手动触发模式，不显示轮询（用户手动扫码）
+        """
         if not self.feishu_app_id or not self.feishu_app_secret or not self.feishu_chat_id:
             return False
         token = self.get_feishu_token()
@@ -110,15 +131,14 @@ class WeiboQRLogin:
         else:
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"📷 [点击查看二维码]({qrcode_url})"}})
         
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⏰ Cookie 已过期，请扫码更新"}})
-        
-        if GITHUB_TOKEN:
-            github_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/main.yml"
-            elements.append({
-                "tag": "action",
-                "actions": [{"tag": "button", "text": {"tag": "plain_text", "content": "🚀 立即触发扫码登录"}, "url": github_url, "type": "primary"}]
-            })
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "💡 点击按钮后会自动跳转到 GitHub Actions 页面"}})
+        if trigger_only:
+            # 手动触发模式
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "📱 请使用微博扫描上方二维码"}})
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "✅ 扫描成功后，下次运行将自动获取新Cookie"}})
+        else:
+            # 正常模式
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⏰ Cookie 已过期，请扫码更新"}})
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "� 程序将持续等待扫描（2分钟内）"}})
         
         card = {"header": {"title": {"tag": "plain_text", "content": "🔐 Cookie 已过期"}, "template": "orange"}, "elements": elements}
         
@@ -151,34 +171,63 @@ class WeiboQRLogin:
         return resp_json.get('retcode'), resp_json.get('data') or {}, resp_json
     
     def run_login_process(self, timeout: int = 120, trigger_only: bool = False) -> Optional[str]:
-        logger.info("🚀 开始微博扫码登录流程")
+        """
+        扫码登录流程
+        - trigger_only=False: 正常模式，检查24h冷却，发送二维码+轮询，超时发送按钮
+        - trigger_only=True: 手动触发模式，跳过冷却，直接发送二维码（不轮询）
+        """
+        logger.info(f"🚀 开始微博扫码登录流程 (trigger_only={trigger_only})")
         
-        if trigger_only:
-            self.send_feishu_notification("", None, auto_trigger=True)
+        # 正常模式：检查24小时冷却
+        if not trigger_only and self.check_qrcode_status():
+            logger.warning("⚠️ 24小时内已发送过二维码，跳过")
             return None
         
-        if self.check_qrcode_status():
-            logger.warning("⚠️ 1小时内已发送过二维码，跳过")
-            return None
-        
+        # 获取二维码
         qrid, image_url = self.get_qrcode()
         if not qrid:
+            logger.error("❌ 获取二维码失败")
             return None
         
+        # 上传并发送二维码到飞书
         image_key = self.upload_qrcode_to_feishu(image_url)
-        if self.send_feishu_notification(image_url, image_key):
-            self.save_qrcode_status(success=True)
+        if not image_key:
+            logger.error("❌ 二维码上传飞书失败")
+            return None
         
+        # 发送通知
+        if self.send_feishu_notification(image_url, image_key, trigger_only=trigger_only):
+            if not trigger_only:
+                self.save_qrcode_status(success=True)
+        
+        # 手动触发模式：只发送二维码，不轮询
+        if trigger_only:
+            logger.info("📤 已发送二维码，请前往飞书扫码（下次运行将自动获取Cookie）")
+            return None
+        
+        # 正常模式：轮询等待扫描
         start_time = time.time()
         while time.time() - start_time < timeout:
             ret, data, _ = self.check_status(qrid)
+            
+            # 50114004 = 已扫描待确认
+            if ret == 50114004:
+                logger.info("✅ 用户已扫码，等待确认...")
+                time.sleep(3)
+                continue
+            
+            # 20000000 = 待扫描
             if ret == 20000000:
                 time.sleep(3)
                 continue
-            elif ret == 20100000:
+            
+            # 20100000 = 扫描中
+            if ret == 20100000:
                 time.sleep(3)
                 continue
-            elif ret == 20000000:
+            
+            # 获取到cookie
+            if ret == 0 and data:
                 from urllib.parse import urlparse, parse_qs
                 url = data.get('url', '')
                 query = parse_qs(urlparse(url).query)
@@ -187,19 +236,62 @@ class WeiboQRLogin:
                     self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
                     sub_cookie = self.session.cookies.get('SUB')
                     if sub_cookie:
-                        self.save_qrcode_status(success=False)
+                        logger.info("✅ 扫码成功，获取到新Cookie")
+                        self.save_qrcode_status(success=False)  # 清除冷却标记
+                        # 输出 NEW_SUB_COOKIE 供 GitHub Actions 捕获
+                        github_output = os.environ.get('GITHUB_OUTPUT', '')
+                        if github_output:
+                            with open(github_output, 'a') as f:
+                                f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                        else:
+                            # 旧版 GitHub Actions
+                            print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
                         return sub_cookie
-            elif ret == 50114004:
-                return None
+            
             time.sleep(3)
+        
+        # 超时：发送按钮让用户手动触发
+        logger.warning("⏰ 扫码超时，发送触发按钮...")
+        self.send_timeout_button()
         return None
+    
+    def send_timeout_button(self):
+        """发送超时按钮通知"""
+        token = self.get_feishu_token()
+        if not token:
+            return
+        
+        github_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/main.yml"
+        
+        elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "⏰ 二维码已过期，未及时扫描"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "🔐 请点击下方按钮获取新二维码"}},
+            {
+                "tag": "action",
+                "actions": [{"tag": "button", "text": {"tag": "plain_text", "content": "🔄 获取新二维码"}, "url": github_url, "type": "primary"}]
+            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": "💡 点击按钮后在 GitHub Actions 页面点击【Run workflow】即可"}}
+        ]
+        
+        card = {
+            "header": {"title": {"tag": "plain_text", "content": "⏰ 扫码超时"}, "template": "orange"},
+            "elements": elements
+        }
+        
+        try:
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
+            r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
+            logger.info(f"📤 超时按钮通知已发送: {r.json().get('code') == 0}")
+        except Exception as e:
+            logger.error(f"❌ 发送超时按钮失败: {e}")
 
 # ---------- 配置 ----------
 GROUP_ID = '5159683220312291'
 MAX_WORKERS = 10
 PAGE_LIMIT = 20
 # 微博Cookie (从浏览器F12 Headers中提取)
-DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1NfwLa8WGEMJdHVbVkEaB4udpifyizasVO"
+DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1NfwLa8WGEMJdHVbVkEaB4udpifyizasVP"
 # 飞书应用配置（用于发送图片消息）
 DEFAULT_FEISHU_APP_ID = "cli_a933badfd57bdbde"
 DEFAULT_FEISHU_APP_SECRET = "zliAQFZ61YOVdhSz8vecahozbGz6Ym5j"
@@ -1122,12 +1214,12 @@ if __name__ == '__main__':
             print("❌ 消息发送失败")
         sys.exit(0)
     
-    # 手动登录模式
+    # 手动登录模式（带轮询）
     if '--login' in sys.argv:
         sys.argv.remove('--login')
-        logger.info("🚀 手动触发扫码登录...")
+        logger.info("🚀 手动触发扫码登录（带轮询）...")
         login_bot = WeiboQRLogin(feishu_app_id, feishu_app_secret, feishu_chat_id)
-        new_sub = login_bot.run_login_process()
+        new_sub = login_bot.run_login_process(trigger_only=False)
         if new_sub:
             current_status = load_status()
             save_status(current_status.get('last_timestamp'), new_sub)
@@ -1135,6 +1227,16 @@ if __name__ == '__main__':
             print(f"SUB: {new_sub}")
         else:
             print("❌ 登录失败或超时")
+        sys.exit(0)
+    
+    # 手动触发模式（跳过冷却，不轮询）
+    if '--trigger' in sys.argv:
+        sys.argv.remove('--trigger')
+        logger.info("🚀 手动触发获取二维码（跳过冷却，不轮询）...")
+        login_bot = WeiboQRLogin(feishu_app_id, feishu_app_secret, feishu_chat_id)
+        login_bot.run_login_process(trigger_only=True)
+        print("\n✅ 二维码已发送，请前往飞书扫码")
+        print("💡 扫描成功后，下次运行将自动获取新Cookie")
         sys.exit(0)
     
     # 正常监控模式
@@ -1146,26 +1248,31 @@ if __name__ == '__main__':
         execute_monitoring(cookie, feishu_app_id, feishu_app_secret, feishu_chat_id)
     except ConnectionRefusedError as e:
         if str(e) == "COOKIE_EXPIRED":
-            logger.info("\n⚡ [AutoFix] 检测到 Cookie 失效...")
+            logger.info("\n⚡ [AutoFix] 检测到 Cookie 失效，开始扫码登录...")
             try:
-                # 使用集成的 WeiboQRLogin 类发送触发通知
                 login_bot = WeiboQRLogin(feishu_app_id, feishu_app_secret, feishu_chat_id)
                 
-                # 发送带 GitHub Actions 按钮的通知
-                login_bot.send_feishu_notification("", None, auto_trigger=True)
+                # 正常模式：发二维码 + 轮询 + 超时发按钮
+                new_cookie = login_bot.run_login_process(trigger_only=False)
                 
-                # 触发 GitHub Actions
-                if GITHUB_TOKEN:
-                    logger.info("🔗 触发 GitHub Actions 扫码登录...")
-                    trigger_github_workflow()
-                    logger.info("✅ GitHub Actions 已触发，请前往飞书点击按钮完成扫码")
+                if new_cookie:
+                    # 扫码成功，保存到 TXT
+                    current_status = load_status()
+                    save_status(current_status.get('last_timestamp'), new_cookie)
+                    logger.info("✅ 新 Cookie 已保存到 TXT")
+                    print(f"\n✅ 登录成功！Cookie: {new_cookie[:20]}...")
+                    
+                    # 立即重新运行监控
+                    logger.info("🔄 立即重新运行监控...")
+                    execute_monitoring(new_cookie, feishu_app_id, feishu_app_secret, feishu_chat_id)
+                    return  # 结束程序
                 else:
-                    logger.warning("⚠️ 未配置 GITHUB_TOKEN，请手动触发 Actions")
+                    # 超时或失败，已发送按钮
+                    logger.info("💡 超时未扫描，请前往飞书点击按钮重新触发")
                 
-                logger.info("💡 请前往飞书点击【立即触发扫码登录】按钮")
                 sys.exit(0)
             except Exception as ex:
-                logger.error(f"❌ 触发失败: {ex}")
+                logger.error(f"❌ 扫码登录失败: {ex}")
                 sys.exit(1)
         else:
             sys.exit(1)
