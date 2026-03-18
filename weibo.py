@@ -1265,7 +1265,7 @@ if __name__ == '__main__':
                     # 立即重新运行监控
                     logger.info("🔄 立即重新运行监控...")
                     execute_monitoring(new_cookie, feishu_app_id, feishu_app_secret, feishu_chat_id)
-                    return  # 结束程序
+                    sys.exit(0)
                 else:
                     # 超时或失败，已发送按钮
                     logger.info("💡 超时未扫描，请前往飞书点击按钮重新触发")
