@@ -204,8 +204,38 @@ class WeiboQRBot:
                 print(f"🔍 50114004 完整响应: {full_resp}")
             
             if ret == 20000000:
+                # 扫码成功，获取 alt
                 elapsed = int(time.time() - start)
-                print(f"⏳ 等待扫码... ({elapsed}s)")
+                print(f"✅ 扫码成功 ({elapsed}s)，正在换取 Cookie...")
+                
+                # 从 data.url 中提取 alt
+                url = data.get('url', '')
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(url)
+                query = parse_qs(parsed.query)
+                alt = query.get('alt', [None])[0]
+                
+                if alt:
+                    print(f"🎫 获取到 alt: {alt[:30]}...")
+                    login_url = f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3"
+                    self.session.get(login_url)
+                    
+                    cookies = self.session.cookies.get_dict()
+                    sub_cookie = cookies.get('SUB')
+                    print(f"🍪 获取到的 Cookie: {list(cookies.keys())}")
+                    
+                    if sub_cookie:
+                        print("=" * 50)
+                        print("✨ 登录成功！")
+                        print(f"SUB: {sub_cookie}")
+                        print("=" * 50)
+                        
+                        # 发送成功通知
+                        self.send_success_notification(sub_cookie)
+                        
+                        return sub_cookie
+                
+                print("⚠️ 未能获取 Cookie，继续等待...")
                 time.sleep(3)
                 continue
             
