@@ -1153,6 +1153,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description='微博监控')
     parser.add_argument('--test', action='store_true', help='发送测试消息')
+    parser.add_argument('--trigger', action='store_true', help='手动触发获取二维码（跳过冷却）')
     args = parser.parse_args()
     
     # 加载状态
