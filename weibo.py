@@ -324,12 +324,9 @@ class WeiboQRLogin:
             
             time.sleep(3)
         
-        # 超时：正常模式发送按钮，手动触发模式不发送
-        if not trigger_only:
-            logger.warning("⏰ 扫码超时，发送触发按钮...")
-            self.send_timeout_button()
-        else:
-            logger.warning("⏰ 扫码超时，请重新手动触发")
+        # 超时：两种模式都发送按钮
+        logger.warning("⏰ 扫码超时，发送触发按钮...")
+        self.send_timeout_button()
         return None
     
     def send_timeout_button(self):
@@ -1310,6 +1307,15 @@ if __name__ == '__main__':
     if '--trigger' in sys.argv:
         sys.argv.remove('--trigger')
         logger.info("🚀 手动触发获取二维码（跳过冷却，带轮询）...")
+        
+        # 先检查当前 cookie 是否有效
+        if cookie and check_cookie_status(cookie):
+            logger.info("✅ 当前 Cookie 仍然有效，无需重新登录")
+            # 直接运行监控
+            execute_monitoring(cookie, feishu_app_id, feishu_app_secret, feishu_chat_id)
+            sys.exit(0)
+        
+        # Cookie 无效，需要重新登录
         login_bot = WeiboQRLogin(feishu_app_id, feishu_app_secret, feishu_chat_id)
         new_cookie = login_bot.run_login_process(trigger_only=True)
         
