@@ -203,28 +203,40 @@ class WeiboQRLogin:
         # 轮询等待扫描（两种模式都轮询）
         start_time = time.time()
         while time.time() - start_time < timeout:
-            ret, data, _ = self.check_status(qrid)
+            ret, data, full_resp = self.check_status(qrid)
             
             # 50114004 = 已确认登录
             if ret == 50114004:
                 logger.info("✅ 用户已确认登录，正在获取 Cookie...")
                 from urllib.parse import urlparse, parse_qs
-                url = data.get('url', '') or ''
+                # 尝试从 data.url 或 data.alt 获取
+                url = data.get('url', '') if isinstance(data, dict) else ''
                 query = parse_qs(urlparse(url).query)
-                alt = query.get('alt', [None])[0] or data.get('alt')
+                alt = query.get('alt', [None])[0] or (data.get('alt') if isinstance(data, dict) else None)
+                
                 if alt:
+                    logger.info(f"🎫 获取到 alt: {alt[:30]}...")
                     self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
-                    sub_cookie = self.session.cookies.get('SUB')
-                    if sub_cookie:
-                        logger.info("✅ 扫码成功，获取到新Cookie")
-                        self.save_qrcode_status(success=False)
-                        github_output = os.environ.get('GITHUB_OUTPUT', '')
-                        if github_output:
-                            with open(github_output, 'a') as f:
-                                f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
-                        else:
-                            print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
-                        return sub_cookie
+                else:
+                    logger.warning("⚠️ alt 为空，尝试直接访问登录页面...")
+                    self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3")
+                
+                cookies = self.session.cookies.get_dict()
+                sub_cookie = cookies.get('SUB')
+                logger.info(f"🍪 获取到的 Cookie: {list(cookies.keys())}")
+                
+                if sub_cookie:
+                    logger.info("✅ 扫码成功，获取到新Cookie")
+                    self.save_qrcode_status(success=False)
+                    github_output = os.environ.get('GITHUB_OUTPUT', '')
+                    if github_output:
+                        with open(github_output, 'a') as f:
+                            f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                    else:
+                        print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
+                    return sub_cookie
+                else:
+                    logger.warning("⚠️ SUB Cookie 未获取到，继续等待...")
                 time.sleep(3)
                 continue
             
@@ -238,12 +250,15 @@ class WeiboQRLogin:
             if ret == 20000000:
                 logger.info("✅ 用户已扫码，等待确认...")
                 from urllib.parse import urlparse, parse_qs
-                url = data.get('url', '') or ''
+                url = data.get('url', '') if isinstance(data, dict) else ''
                 query = parse_qs(urlparse(url).query)
                 alt = query.get('alt', [None])[0]
+                
                 if alt:
+                    logger.info(f"🎫 获取到 alt: {alt[:30]}...")
                     self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
-                    sub_cookie = self.session.cookies.get('SUB')
+                    cookies = self.session.cookies.get_dict()
+                    sub_cookie = cookies.get('SUB')
                     if sub_cookie:
                         logger.info("✅ 扫码成功，获取到新Cookie")
                         self.save_qrcode_status(success=False)
@@ -260,7 +275,7 @@ class WeiboQRLogin:
             # 20100000 = 确认成功
             if ret == 20100000:
                 logger.info("✅ 确认成功，获取 Cookie...")
-                alt = data.get('alt')
+                alt = data.get('alt') if isinstance(data, dict) else None
                 if alt:
                     self.session.get(f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3")
                     sub_cookie = self.session.cookies.get('SUB')
