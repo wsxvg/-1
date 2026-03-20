@@ -198,8 +198,8 @@ class WeiboQRLogin:
         card = {"header": {"title": {"tag": "plain_text", "content": "🔐 Cookie 已过期"}, "template": "orange"}, "elements": elements}
         
         try:
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-            payload = {"receive_id": FEISHU_USER_ID, "msg_type": "interactive", "content": json.dumps(card)}
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
             r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
             return r.json().get('code') == 0
         except:
@@ -381,8 +381,8 @@ class WeiboQRLogin:
         }
         
         try:
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-            payload = {"receive_id": FEISHU_USER_ID, "msg_type": "interactive", "content": json.dumps(card)}
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
             r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
             logger.info(f"📤 超时按钮通知已发送: {r.json().get('code') == 0}")
         except Exception as e:
@@ -397,8 +397,6 @@ DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1N
 # 飞书应用配置（用于发送图片消息）
 DEFAULT_FEISHU_APP_ID = "cli_a933badfd57bdbde"
 DEFAULT_FEISHU_APP_SECRET = "zliAQFZ61YOVdhSz8vecahozbGz6Ym5j"
-# 飞书用户ID（用于私发消息）
-FEISHU_USER_ID = "oc_727fbcc6d94e338a6520f0669c8e0bfe"
 PROXIES_SETTING = {"http": None, "https": None}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -785,14 +783,14 @@ class WeiboDataParser:
                 }
             }
             
-            # 发送到私聊（使用 open_id）
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+            # 发送到群里
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
             headers = {
                 'Authorization': f'Bearer {token}',
                 'Content-Type': 'application/json'
             }
             payload = {
-                "receive_id": FEISHU_USER_ID,
+                "receive_id": self.feishu_chat_id,
                 "msg_type": "interactive",
                 "content": json.dumps(card_msg["card"])
             }
