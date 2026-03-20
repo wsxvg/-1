@@ -14,6 +14,9 @@ import requests
 import hashlib
 import base64
 import pytz
+import cv2
+import numpy as np
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from dateutil import parser
@@ -23,6 +26,10 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
+
+# ========== 全局配置变量 ==========
+CF_WEIBO_TRIGGER_URL = "https://weibo.w17826038535.workers.dev/?key=Wan1314520"
+WEIBO_SCHEME = "sinaweibo://browser?url="
 
 # ========== 微博扫码登录模块 ==========
 class WeiboQRLogin:
@@ -118,11 +125,43 @@ class WeiboQRLogin:
             logger.error(f"❌ 飞书图片上传异常: {e}")
             return None
     
-    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, trigger_only: bool = False) -> bool:
+    def decode_qr(self, image_url: str) -> Optional[str]:
+        """使用 OpenCV 识别二维码中的 URL"""
+        try:
+            resp = requests.get(image_url, timeout=15)
+            if resp.status_code != 200:
+                logger.error(f"❌ 二维码下载失败: HTTP {resp.status_code}")
+                return None
+            
+            # 使用 numpy 将二进制转为图像矩阵
+            img_array = np.frombuffer(resp.content, dtype=np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                logger.error("❌ 二维码图像解码失败")
+                return None
+            
+            # 使用 OpenCV 识别二维码
+            detector = cv2.QRCodeDetector()
+            ret, decoded_info, _, _ = detector.detectAndDecodeMulti(img)
+            
+            if ret and decoded_info:
+                logger.info(f"✅ 二维码识别成功: {decoded_info[0][:50]}...")
+                return decoded_info[0]
+            else:
+                logger.error("❌ 未检测到二维码")
+                return None
+        except Exception as e:
+            logger.error(f"❌ 二维码识别异常: {e}")
+            return None
+    
+    def send_feishu_notification(self, qrcode_url: str, image_key: str = None, trigger_only: bool = False, attempt: int = 1, qr_url: str = None) -> bool:
         """
         发送飞书二维码通知
         - trigger_only=False: 正常模式，显示轮询提示
         - trigger_only=True: 手动触发模式，不显示轮询（用户手动扫码）
+        - attempt: 第几次扫码尝试
+        - qr_url: 识别出的二维码URL，用于生成 DeepLink
         """
         if not self.feishu_app_id or not self.feishu_app_secret or not self.feishu_chat_id:
             return False
@@ -136,20 +175,31 @@ class WeiboQRLogin:
         else:
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"📷 [点击查看二维码]({qrcode_url})"}})
         
+        # 如果提供了 qr_url，生成 DeepLink 按钮
+        if qr_url:
+            encoded_url = urllib.parse.quote(qr_url, safe='')
+            deeplink = f"{WEIBO_SCHEME}{encoded_url}"
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "📱 一键打开微博扫码"}, "url": deeplink, "type": "primary"}
+                ]
+            })
+        
         if trigger_only:
             # 手动触发模式
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "📱 请使用微博扫描上方二维码"}})
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "✅ 扫描成功后，下次运行将自动获取新Cookie"}})
         else:
             # 正常模式
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⏰ Cookie 已过期，请扫码更新"}})
-            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "� 程序将持续等待扫描（2分钟内）"}})
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"⏰ 第 {attempt}/2 次扫码，请尽快扫描"}})
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "⏱️ 程序将持续等待扫描（60秒内）"}})
         
         card = {"header": {"title": {"tag": "plain_text", "content": "🔐 Cookie 已过期"}, "template": "orange"}, "elements": elements}
         
         try:
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
-            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+            payload = {"receive_id": FEISHU_USER_ID, "msg_type": "interactive", "content": json.dumps(card)}
             r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
             return r.json().get('code') == 0
         except:
@@ -175,11 +225,12 @@ class WeiboQRLogin:
         resp_json = resp.json()
         return resp_json.get('retcode'), resp_json.get('data') or {}, resp_json
     
-    def run_login_process(self, timeout: int = 120, trigger_only: bool = False) -> Optional[str]:
+    def run_login_process(self, timeout: int = 60, trigger_only: bool = False) -> Optional[str]:
         """
-        扫码登录流程
-        - trigger_only=False: 正常模式，检查24h冷却，发送二维码+轮询，超时发送按钮
-        - trigger_only=True: 手动触发模式，跳过冷却，发送二维码+轮询（超时不发送按钮）
+        扫码登录流程 - 重写版
+        - 最多尝试2次扫码
+        - 每次轮询60秒
+        - 每次发送带 DeepLink 的二维码卡片
         """
         logger.info(f"🚀 开始微博扫码登录流程 (trigger_only={trigger_only})")
         
@@ -188,103 +239,66 @@ class WeiboQRLogin:
             logger.warning("⚠️ 24小时内已发送过二维码，跳过")
             return None
         
-        # 获取二维码
-        qrid, image_url = self.get_qrcode()
-        if not qrid:
-            logger.error("❌ 获取二维码失败")
-            return None
-        
-        # 上传并发送二维码到飞书
-        image_key = self.upload_qrcode_to_feishu(image_url)
-        if not image_key:
-            logger.error("❌ 二维码上传飞书失败")
-            return None
-        
-        # 发送通知
-        if self.send_feishu_notification(image_url, image_key, trigger_only=trigger_only):
-            if not trigger_only:
-                self.save_qrcode_status(success=True)
-        
-        # 轮询等待扫描（两种模式都轮询）
-        start_time = time.time()
-        saved_alt = None  # 保存 alt 供 50114004 使用
-        
-        while time.time() - start_time < timeout:
-            ret, data, full_resp = self.check_status(qrid)
+        # 建立循环：最多2次尝试
+        for attempt in range(1, 3):
+            logger.info(f"📱 开始第 {attempt}/2 次扫码尝试")
             
-            # 50114004 = 已确认登录
-            if ret == 50114004:
-                logger.info("✅ 用户已确认登录，正在获取 Cookie...")
-                from urllib.parse import urlparse, parse_qs
+            # 1. 获取二维码
+            qrid, image_url = self.get_qrcode()
+            if not qrid:
+                logger.error("❌ 获取二维码失败")
+                continue
+            
+            # 2. 识别二维码 URL
+            qr_url = self.decode_qr(image_url)
+            if not qr_url:
+                logger.warning("⚠️ 二维码识别失败，将发送不带 DeepLink 的卡片")
+                qr_url = None
+            
+            # 3. 上传并发送二维码到飞书
+            image_key = self.upload_qrcode_to_feishu(image_url)
+            if not image_key:
+                logger.error("❌ 二维码上传飞书失败")
+                continue
+            
+            # 4. 发送带 DeepLink 的通知卡片
+            if self.send_feishu_notification(image_url, image_key, trigger_only=trigger_only, attempt=attempt, qr_url=qr_url):
+                if not trigger_only:
+                    self.save_qrcode_status(success=True)
+            
+            # 5. 轮询等待扫描（60秒）
+            start_time = time.time()
+            saved_alt = None
+            
+            while time.time() - start_time < timeout:
+                ret, data, full_resp = self.check_status(qrid)
                 
-                # 优先用保存的 alt，其次从 data 获取
-                alt = saved_alt
-                if not alt:
-                    url = data.get('url', '') if isinstance(data, dict) else ''
-                    query = parse_qs(urlparse(url).query)
-                    alt = query.get('alt', [None])[0] or (data.get('alt') if isinstance(data, dict) else None)
-                
-                if alt:
-                    logger.info(f"🎫 使用 alt: {alt[:30]}...")
-                    # 跟随重定向获取 cookie
-                    self.session.get(
-                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
-                        allow_redirects=True
-                    )
-                else:
-                    logger.warning("⚠️ alt 为空，尝试直接访问登录页面...")
-                    self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3", allow_redirects=True)
-                
-                cookies = self.session.cookies.get_dict()
-                sub_cookie = cookies.get('SUB')
-                logger.info(f"🍪 获取到的 Cookie: {list(cookies.keys())}")
-                
-                if sub_cookie:
-                    logger.info("✅ 扫码成功，获取到新Cookie")
-                    self.save_qrcode_status(success=False)
-                    github_output = os.environ.get('GITHUB_OUTPUT', '')
-                    if github_output:
-                        with open(github_output, 'a') as f:
-                            f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                # 50114004 = 已确认登录 或 20000000 = 扫码成功
+                if ret == 50114004 or ret == 20000000:
+                    logger.info(f"✅ 用户已确认登录 (retcode={ret})，正在获取 Cookie...")
+                    from urllib.parse import urlparse, parse_qs
+                    
+                    # 优先用保存的 alt，其次从 data 获取
+                    alt = saved_alt
+                    if not alt:
+                        url = data.get('url', '') if isinstance(data, dict) else ''
+                        query = parse_qs(urlparse(url).query)
+                        alt = query.get('alt', [None])[0] or (data.get('alt') if isinstance(data, dict) else None)
+                    
+                    if alt:
+                        logger.info(f"🎫 使用 alt: {alt[:30]}...")
+                        self.session.get(
+                            f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
+                            allow_redirects=True
+                        )
                     else:
-                        print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
-                    return sub_cookie
-                else:
-                    logger.warning("⚠️ SUB Cookie 未获取到，继续等待...")
-                time.sleep(3)
-                continue
-            
-            # 50114001 = 已扫码，等待确认
-            if ret == 50114001:
-                logger.info("✅ 已扫码，请点击确认登录...")
-                # 尝试获取并保存 alt
-                from urllib.parse import urlparse, parse_qs
-                url = data.get('url', '') if isinstance(data, dict) else ''
-                query = parse_qs(urlparse(url).query)
-                alt = query.get('alt', [None])[0]
-                if alt:
-                    saved_alt = alt
-                    logger.info(f"🎫 保存 alt: {alt[:30]}...")
-                time.sleep(3)
-                continue
-            
-            # 20000000 = 扫码成功，获取 alt
-            if ret == 20000000:
-                logger.info("✅ 用户已扫码，等待确认...")
-                from urllib.parse import urlparse, parse_qs
-                url = data.get('url', '') if isinstance(data, dict) else ''
-                query = parse_qs(urlparse(url).query)
-                alt = query.get('alt', [None])[0]
-                
-                if alt:
-                    logger.info(f"🎫 获取到 alt: {alt[:30]}...")
-                    saved_alt = alt  # 保存 alt
-                    self.session.get(
-                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
-                        allow_redirects=True
-                    )
+                        logger.warning("⚠️ alt 为空，尝试直接访问登录页面...")
+                        self.session.get("https://passport.weibo.com/sso/v2/login?entry=miniblog&type=3", allow_redirects=True)
+                    
                     cookies = self.session.cookies.get_dict()
                     sub_cookie = cookies.get('SUB')
+                    logger.info(f"🍪 获取到的 Cookie: {list(cookies.keys())}")
+                    
                     if sub_cookie:
                         logger.info("✅ 扫码成功，获取到新Cookie")
                         self.save_qrcode_status(success=False)
@@ -295,66 +309,80 @@ class WeiboQRLogin:
                         else:
                             print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
                         return sub_cookie
+                    else:
+                        logger.warning("⚠️ SUB Cookie 未获取到，继续等待...")
+                    time.sleep(3)
+                    continue
+                
+                # 50114001 = 已扫码，等待确认
+                if ret == 50114001:
+                    logger.info("✅ 已扫码，请点击确认登录...")
+                    from urllib.parse import urlparse, parse_qs
+                    url = data.get('url', '') if isinstance(data, dict) else ''
+                    query = parse_qs(urlparse(url).query)
+                    alt = query.get('alt', [None])[0]
+                    if alt:
+                        saved_alt = alt
+                        logger.info(f"🎫 保存 alt: {alt[:30]}...")
+                    time.sleep(3)
+                    continue
+                
+                # 20100000 = 确认成功
+                if ret == 20100000:
+                    logger.info("✅ 确认成功，获取 Cookie...")
+                    alt = data.get('alt') if isinstance(data, dict) else None
+                    if alt:
+                        saved_alt = alt
+                        self.session.get(
+                            f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
+                            allow_redirects=True
+                        )
+                        sub_cookie = self.session.cookies.get('SUB')
+                        if sub_cookie:
+                            logger.info("✅ 扫码成功，获取到新Cookie")
+                            self.save_qrcode_status(success=False)
+                            github_output = os.environ.get('GITHUB_OUTPUT', '')
+                            if github_output:
+                                with open(github_output, 'a') as f:
+                                    f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
+                            else:
+                                print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
+                            return sub_cookie
+                    time.sleep(3)
+                    continue
+                
                 time.sleep(3)
-                continue
             
-            # 20100000 = 确认成功
-            if ret == 20100000:
-                logger.info("✅ 确认成功，获取 Cookie...")
-                alt = data.get('alt') if isinstance(data, dict) else None
-                if alt:
-                    saved_alt = alt
-                    self.session.get(
-                        f"https://passport.weibo.com/sso/v2/login?entry=miniblog&alt={alt}&type=3",
-                        allow_redirects=True
-                    )
-                    sub_cookie = self.session.cookies.get('SUB')
-                    if sub_cookie:
-                        logger.info("✅ 扫码成功，获取到新Cookie")
-                        self.save_qrcode_status(success=False)
-                        github_output = os.environ.get('GITHUB_OUTPUT', '')
-                        if github_output:
-                            with open(github_output, 'a') as f:
-                                f.write(f'NEW_SUB_COOKIE={sub_cookie}\n')
-                        else:
-                            print(f"::set-output name=NEW_SUB_COOKIE::{sub_cookie}")
-                        return sub_cookie
-                time.sleep(3)
-                continue
-            
-            time.sleep(3)
+            # 60秒超时，进入下一次循环
+            logger.warning(f"⏰ 第 {attempt} 次扫码超时，准备发起第 {attempt+1} 次...")
         
-        # 超时：两种模式都发送按钮
-        logger.warning("⏰ 扫码超时，发送触发按钮...")
+        # 2次循环都跑完还没成功
+        logger.error("❌ 两次扫码均超时")
         self.send_timeout_button()
         return None
     
     def send_timeout_button(self):
-        """发送超时按钮通知"""
+        """发送超时按钮通知 - 两次扫码都失败后调用"""
         token = self.get_feishu_token()
         if not token:
             return
         
-        github_url = f"https://github.com/{GITHUB_REPO}/actions/workflows/main.yml"
-        
         elements = [
-            {"tag": "div", "text": {"tag": "lark_md", "content": "⏰ 二维码已过期，未及时扫描"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": "🔐 请点击下方按钮获取新二维码"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "⏰ 两次扫码均已超时，请重新获取二维码"}},
             {
                 "tag": "action",
-                "actions": [{"tag": "button", "text": {"tag": "plain_text", "content": "🔄 获取新二维码"}, "url": github_url, "type": "primary"}]
-            },
-            {"tag": "div", "text": {"tag": "lark_md", "content": "💡 点击按钮后在 GitHub Actions 页面点击【Run workflow】即可"}}
+                "actions": [{"tag": "button", "text": {"tag": "plain_text", "content": "🔄 重新获取二维码"}, "url": CF_WEIBO_TRIGGER_URL, "type": "default"}]
+            }
         ]
         
         card = {
-            "header": {"title": {"tag": "plain_text", "content": "⏰ 扫码超时"}, "template": "orange"},
+            "header": {"title": {"tag": "plain_text", "content": "⏰ 扫码超时"}, "template": "grey"},
             "elements": elements
         }
         
         try:
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
-            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+            payload = {"receive_id": FEISHU_USER_ID, "msg_type": "interactive", "content": json.dumps(card)}
             r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
             logger.info(f"📤 超时按钮通知已发送: {r.json().get('code') == 0}")
         except Exception as e:
@@ -369,6 +397,8 @@ DEFAULT_SUB_COOKIE = "_2A25EvlvaDeRhGeFJ7FoY8SfEyzuIHXVnstESrDV6PUJbktANLWHikW1N
 # 飞书应用配置（用于发送图片消息）
 DEFAULT_FEISHU_APP_ID = "cli_a933badfd57bdbde"
 DEFAULT_FEISHU_APP_SECRET = "zliAQFZ61YOVdhSz8vecahozbGz6Ym5j"
+# 飞书用户ID（用于私发消息）
+FEISHU_USER_ID = "oc_727fbcc6d94e338a6520f0669c8e0bfe"
 PROXIES_SETTING = {"http": None, "https": None}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -755,14 +785,14 @@ class WeiboDataParser:
                 }
             }
             
-            # 发送到群里
-            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            # 发送到私聊（使用 open_id）
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
             headers = {
                 'Authorization': f'Bearer {token}',
                 'Content-Type': 'application/json'
             }
             payload = {
-                "receive_id": self.feishu_chat_id,
+                "receive_id": FEISHU_USER_ID,
                 "msg_type": "interactive",
                 "content": json.dumps(card_msg["card"])
             }
