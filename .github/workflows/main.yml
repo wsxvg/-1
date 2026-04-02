@@ -2,19 +2,8 @@ name: 微博监控
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # 7点北京
-    - cron: '0 0 * * *'   # 8点北京
-    - cron: '0 1 * * *'   # 9点北京
-    - cron: '0 2 * * *'   # 10点北京
-    - cron: '0 4 * * *'   # 12点北京
-    - cron: '0 7 * * *'   # 15点北京
-    - cron: '0 8 * * *'   # 16点北京
-    - cron: '0 9 * * *'   # 17点北京
-    - cron: '0 10 * * *'  # 18点北京
-    - cron: '0 11 * * *'  # 19点北京
-    - cron: '0 12 * * *'  # 20点北京
-    - cron: '0 13 * * *'  # 21点北京
-  workflow_dispatch:
+    - cron: '*/5 * * * *'  # 每 5 分钟执行一次（GitHub Actions 允许的最高频率）
+  workflow_dispatch:       # 保留手动触发按钮
 
 jobs:
   monitor:
