@@ -302,6 +302,7 @@ class WeiboQRLogin:
                     if sub_cookie:
                         logger.info("✅ 扫码成功，获取到新Cookie")
                         self.save_qrcode_status(success=False)
+                        self.send_login_success_notification(sub_cookie)
                         github_output = os.environ.get('GITHUB_OUTPUT', '')
                         if github_output:
                             with open(github_output, 'a') as f:
@@ -341,6 +342,7 @@ class WeiboQRLogin:
                         if sub_cookie:
                             logger.info("✅ 扫码成功，获取到新Cookie")
                             self.save_qrcode_status(success=False)
+                            self.send_login_success_notification(sub_cookie)
                             github_output = os.environ.get('GITHUB_OUTPUT', '')
                             if github_output:
                                 with open(github_output, 'a') as f:
@@ -361,6 +363,33 @@ class WeiboQRLogin:
         self.send_timeout_button()
         return None
     
+    def send_login_success_notification(self, new_cookie: str):
+        """发送扫码成功通知到飞书"""
+        token = self.get_feishu_token()
+        if not token:
+            return
+
+        elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "✅ 微博扫码成功，已获取新 Cookie"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "📋 Cookie 已保存，将立即开始监控抓取"}}
+        ]
+
+        card = {
+            "header": {"title": {"tag": "plain_text", "content": "🔐 登录成功"}, "template": "green"},
+            "elements": elements
+        }
+
+        try:
+            url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": self.feishu_chat_id, "msg_type": "interactive", "content": json.dumps(card)}
+            r = requests.post(url, json=payload, headers={'Authorization': f'Bearer {token}'}, timeout=10)
+            if r.json().get('code', -1) == 0:
+                logger.info("✅ 登录成功通知已发送到飞书")
+            else:
+                logger.error(f"❌ 登录通知发送失败: {r.json()}")
+        except Exception as e:
+            logger.error(f"❌ 发送登录通知异常: {e}")
+
     def send_timeout_button(self):
         """发送超时按钮通知 - 两次扫码都失败后调用"""
         token = self.get_feishu_token()
@@ -1327,6 +1356,8 @@ if __name__ == '__main__':
             save_status(current_status.get('last_timestamp'), new_sub)
             print(f"\n✅ 登录成功！状态已保存到 {STATUS_FILE}")
             print(f"SUB: {new_sub}")
+            logger.info("🔄 立即重新运行监控...")
+            execute_monitoring(new_sub, feishu_app_id, feishu_app_secret, feishu_chat_id)
         else:
             print("❌ 登录失败或超时")
         sys.exit(0)
